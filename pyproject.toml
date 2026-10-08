@@ -1,0 +1,31 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "specgate"
+version = "0.1.0"
+description = "AI writes the tests, deterministic gates decide if they're any good."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.12"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+specgate = "specgate.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/specgate"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests", "examples/identity_sync/tests"]
+# Lets the example tests `import identity_sync` without packaging the example.
+pythonpath = ["examples/identity_sync"]
+# Fail on typos like @pytest.mark.spce instead of silently ignoring them.
+addopts = ["--strict-markers"]
+markers = [
+    "spec(*ids): links a test to one or more spec scenario IDs, e.g. spec(\"SYNC-001\")",
+]
