@@ -44,7 +44,7 @@ Why the code looks the way it does, and the Java idea each piece maps to.
   importing or running anything. That makes the gate fast, safe to run on
   untrusted AI-written code, and immune to import errors. Java equivalent:
   JavaParser reading annotations from source, rather than reflection at
-  runtime. Stage 4 (assertion strength) will reuse the same approach.
+  runtime. Stage 4 (assertion strength) reuses the same approach.
 - **What counts.** Markers on `test*` functions, `Test*` classes, and
   `test*` methods inside them, matching pytest's default naming. A marker
   on a helper function is ignored, because pytest would never run it.
@@ -56,6 +56,52 @@ Why the code looks the way it does, and the Java idea each piece maps to.
 - **Report.** `TraceabilityReport` holds covered IDs, uncovered scenarios
   and unknown IDs; `passed` is a computed property (a getter with no field).
 
+## Stage 4: assertion-strength gate (`assertions.py`)
+
+- **The problem.** A test can claim `SYNC-001`, run `plan_sync()`, and then
+  `assert actions is not None`. It passes, traceability passes, and it would
+  still pass if the code returned completely wrong actions. That's coverage
+  theater, and AI-generated tests do it a lot.
+- **Rule: one strong assertion per test.** Each `assert`, `pytest.raises`
+  and `assert*` method call is graded strong or weak. A test passes if at
+  least one is strong. Weak ones in a passing test are still listed, but
+  don't fail the gate: `assert x is not None` before `assert x == expected`
+  is a normal guard.
+- **What's weak.** Constants (`assert True`), self-comparison (`x == x`),
+  bare truthiness (`assert result`), `is not None`, type checks
+  (`isinstance`, `hasattr`, `callable`), "non-empty" length checks
+  (`len(x) > 0`, and the always-true `len(x) >= 0`), `pytest.raises(Exception)`
+  without `match=`, and `assertTrue` / `assertIsNotNone` / `assertIsInstance`
+  / `assert_called` / `assert_called_once`. Everything else is strong.
+- **Three verdicts.** `Strength` is an `Enum`: `STRONG`, `WEAK` (only weak
+  assertions) and `MISSING` (none at all), because "asserts badly" and
+  "doesn't assert" need different fixes.
+- **Heuristics on purpose.** This gate is cheap and fast but can be fooled
+  (`assert result == compute(result)` looks strong). Stage 5 (mutation
+  testing) is the expensive gate that measures whether tests catch bugs.
+  Stage 4 exists to fail obviously useless tests in milliseconds, before
+  paying for mutation runs.
+- **Known gaps.** Assertions inside helper functions the test calls aren't
+  followed, so `check_result(x)` counts as no assertion. `ok = validate(x);
+  assert ok` is flagged as truthiness-only even though `ok` is a real bool;
+  `assert validate(x)` is fine.
+- **Structural pattern matching.** `match test: case ast.Compare(left=l,
+  ops=[op], comparators=[r]): ...` checks the node's type and pulls out its
+  fields in one step. It's Java 21's `switch` with record patterns
+  (`case Compare(var l, var op, var r) ->`). `ops=[op]` only matches a
+  list of exactly one element, so chained comparisons like `a < b < c`
+  fall through to "strong".
+- **`ast.walk`** visits every node in the test function, including nested
+  blocks (`with`, `if`, loops). Java equivalent: a JavaParser
+  `VoidVisitorAdapter` that overrides `visit(AssertStmt)` and
+  `visit(MethodCallExpr)`.
+- **`ast.dump(left) == ast.dump(right)`** compares two expressions by
+  structure, ignoring line numbers. Like comparing two JavaParser nodes
+  with `equals()`, which also ignores position.
+- **Sharing with stage 3.** `find_test_files` and `find_spec_refs` come from
+  `traceability.py`, so both gates see the same files and the report can
+  show which spec IDs a weak test claims.
+
 ## CLI (`cli.py`)
 
 - `argparse` with subcommands so later stages slot in as `specgate mutate`
@@ -64,6 +110,7 @@ Why the code looks the way it does, and the Java idea each piece maps to.
   makes it testable: tests call `main([...])` and check the number.
 - Exit codes: `0` pass, `1` gate failed, `2` bad input. CI only needs to
   look at the exit code.
+- `specgate assertions --tests DIR` runs stage 4 with the same exit codes.
 
 ## Example target (`examples/identity_sync`)
 
