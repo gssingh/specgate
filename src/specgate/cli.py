@@ -2,6 +2,8 @@
 
     specgate trace --specs DIR --tests DIR     stage 3: traceability
     specgate assertions --tests DIR            stage 4: assertion strength
+    specgate generate --specs DIR --target FILE --out DIR
+                                               stage 2: AI test generation
 
 Exit codes (what CI looks at):
   0  gate passed
@@ -10,10 +12,21 @@ Exit codes (what CI looks at):
 """
 
 import argparse
+import os
 import sys
 from collections.abc import Sequence
+from pathlib import Path
 
 from specgate.assertions import AssertionReport, Strength, check_assertions
+from specgate.generate import (
+    DEFAULT_MODEL,
+    ClaudeTestWriter,
+    GeneratedTest,
+    Outcome,
+    Target,
+    generate_tests,
+    write_outputs,
+)
 from specgate.spec import SpecParseError, load_specs
 from specgate.traceability import (
     TestScanError,
@@ -40,9 +53,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     assertions.add_argument("--tests", nargs="+", required=True, help="test files or directories")
 
+    generate = commands.add_parser("generate", help="have Claude write a test per scenario")
+    generate.add_argument("--specs", nargs="+", required=True, help="spec files or directories")
+    generate.add_argument("--target", required=True, help="the Python module to test")
+    generate.add_argument("--out", required=True, help="directory for generated tests")
+    generate.add_argument("--only", nargs="+", metavar="ID", help="only these scenario IDs")
+    generate.add_argument("--model", default=os.environ.get("SPECGATE_MODEL", DEFAULT_MODEL))
+    generate.add_argument("--max-attempts", type=int, default=2)
+
     args = parser.parse_args(argv)
     if args.command == "assertions":
         return _run_assertions(args)
+    if args.command == "generate":
+        return _run_generate(args)
     return _run_trace(args)
 
 
@@ -68,6 +91,45 @@ def _run_assertions(args: argparse.Namespace) -> int:
 
     print(format_assertion_report(report))
     return EXIT_PASSED if report.passed else EXIT_FAILED
+
+
+def _run_generate(args: argparse.Namespace) -> int:
+    target = Target(Path(args.target))
+    if not target.path.is_file():
+        print(f"error: target module {target.path} not found", file=sys.stderr)
+        return EXIT_BAD_INPUT
+    try:
+        scenarios = load_specs(args.specs)
+    except (SpecParseError, OSError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return EXIT_BAD_INPUT
+    if args.only:
+        scenarios = [s for s in scenarios if s.id in args.only]
+        if missing := set(args.only) - {s.id for s in scenarios}:
+            print(f"error: no scenario with ID {', '.join(sorted(missing))}", file=sys.stderr)
+            return EXIT_BAD_INPUT
+
+    try:
+        import anthropic
+        from dotenv import load_dotenv
+    except ImportError:
+        print('error: stage 2 needs the AI extras: pip install -e ".[ai]"', file=sys.stderr)
+        return EXIT_BAD_INPUT
+    load_dotenv()  # picks up ANTHROPIC_API_KEY from a local .env, if there is one
+    if not (os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN")):
+        print("error: set ANTHROPIC_API_KEY, or put it in a .env file", file=sys.stderr)
+        return EXIT_BAD_INPUT
+
+    try:
+        writer = ClaudeTestWriter(model=args.model)
+        results = generate_tests(scenarios, target, writer, args.max_attempts)
+    except anthropic.AnthropicError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return EXIT_BAD_INPUT
+
+    written = write_outputs(results, Path(args.out))
+    print(format_generate_report(results, written))
+    return EXIT_PASSED if all(r.outcome is Outcome.KEPT for r in results) else EXIT_FAILED
 
 
 def format_report(report: TraceabilityReport) -> str:
@@ -102,6 +164,22 @@ def format_assertion_report(report: AssertionReport) -> str:
             lines.append("      no assertions")
         for weak in test.weak:
             lines.append(f"      line {weak.line}: {weak.reason}")
+    return "\n".join(lines)
+
+
+def format_generate_report(results: list[GeneratedTest], written: list[Path]) -> str:
+    kept = sum(r.outcome is Outcome.KEPT for r in results)
+    lines = [f"Test generation: {kept}/{len(results)} scenarios got a test that passed every check"]
+    for result in results:
+        tries = "1 attempt" if result.attempts == 1 else f"{result.attempts} attempts"
+        lines.append(f"  {result.outcome.value.upper():12} {result.scenario.id}  ({tries})")
+        if result.draft and result.draft.assumptions:
+            lines.append(f"      assumed: {result.draft.assumptions}")
+        if result.problem:
+            lines.extend(f"      {line}" for line in result.problem.splitlines()[-6:])
+    if written:
+        lines.append("  Wrote:")
+        lines.extend(f"    {path}" for path in written)
     return "\n".join(lines)
 
 

@@ -9,7 +9,7 @@ that don't rely on AI judgement to decide whether the tests can be trusted.
 ```mermaid
 flowchart LR
     S["Markdown spec<br/>SYNC-001, SYNC-002 ..."] --> P["1. Spec parser"]
-    P --> G["2. AI test generator<br/>(planned)"]
+    P --> G["2. AI test generator<br/>(Claude)"]
     G --> T["pytest tests<br/>@pytest.mark.spec(&quot;SYNC-001&quot;)"]
     P --> TR["3. Traceability gate"]
     T --> TR
@@ -23,7 +23,7 @@ flowchart LR
 | Stage | What it checks | Status |
 |---|---|---|
 | 1. Spec parser | Specs are well formed: unique IDs, When and Then present, steps in order | done |
-| 2. Test generator | AI writes pytest tests from scenarios | planned |
+| 2. Test generator | Claude writes one pytest test per scenario; stages 3 and 4 plus a real test run decide whether it is kept | done |
 | 3. Traceability | Every scenario has a test; no test claims an unknown ID | done |
 | 4. Assertion strength | Every test has at least one assertion that can fail on a wrong value (static `ast` analysis) | done |
 | 5. Mutation | Tests fail when the code under test is broken | planned |
@@ -42,6 +42,31 @@ specgate trace \
 specgate assertions \
   --tests examples/identity_sync/tests   # same exit codes
 ```
+
+## Generating tests with Claude
+
+```bash
+pip install -e ".[ai]"
+cp .env.example .env                      # then put your ANTHROPIC_API_KEY in it
+
+specgate generate \
+  --specs examples/identity_sync/specs \
+  --target examples/identity_sync/identity_sync.py \
+  --out examples/identity_sync/generated  # add --only SYNC-003 for one scenario
+```
+
+For each scenario Claude gets the Given/When/Then steps and the module
+source, and returns one test as structured JSON. specgate keeps the test
+only if it parses, claims exactly that scenario ID, has a strong assertion,
+and passes against the real code. A failed check goes back to Claude for
+another attempt (`--max-attempts`, default 2). A test that is well formed
+but still fails against the code is saved under `needs_review/` instead:
+the bug may be in the code or the spec, and a human decides. Exit code 0
+means every scenario got a kept test.
+
+The generated tests run in a subprocess, so only point this at code you'd
+run your own tests against. specgate's own stage 2 tests use a fake writer
+and never call the API.
 
 ## Catching coverage theater
 
@@ -93,6 +118,8 @@ src/specgate/        the tool
   spec.py            stage 1: Markdown spec parser
   traceability.py    stage 3: traceability gate
   assertions.py      stage 4: assertion-strength gate
+  generate.py        stage 2: AI test generation and its checks
+  prompts.py         stage 2: the prompt sent to Claude
   cli.py             `specgate` command
 tests/               specgate's own tests
 examples/identity_sync/

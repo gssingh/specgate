@@ -12,7 +12,10 @@ requires-python = ">=3.12"
 dependencies = []
 
 [project.optional-dependencies]
-dev = ["pytest>=8"]
+# Stage 2 only: the gates work without these.
+ai = ["anthropic>=1.13", "python-dotenv>=1"]
+# Everything, for working on specgate itself.
+dev = ["pytest>=8", "specgate[ai]"]
 
 [project.scripts]
 specgate = "specgate.cli:main"

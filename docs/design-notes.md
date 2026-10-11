@@ -37,6 +37,51 @@ Why the code looks the way it does, and the Java idea each piece maps to.
   `if heading := PATTERN.match(line):` is
   `Matcher m = ...; if (m.matches()) { ... }` in one line.
 
+## Stage 2: AI test generation (`generate.py`, `prompts.py`)
+
+- **The AI drafts, code decides.** Claude writes one test per scenario, but
+  whether it is kept is decided by deterministic checks: it parses, it
+  claims exactly the scenario's ID (stage 3), it has a strong assertion
+  (stage 4), and it passes when run against the real code. That's the
+  whole pitch of specgate applied to its own AI step.
+- **One scenario per request.** Small prompts, a bad answer costs one test,
+  and a retry can target exactly the scenario that failed.
+- **What Claude sees.** The scenario's steps and the module source (for real
+  names and types). Not the existing hand-written tests, or it would copy
+  them.
+- **Structured output.** `output_config.format` with a JSON schema
+  (`test_code`, `assumptions`) means the reply is guaranteed to be valid
+  JSON of that shape, so there is no scraping code out of Markdown fences.
+  `assumptions` surfaces anything the spec left vague for a human to review.
+- **Retry with feedback.** A failed check becomes the next attempt's
+  feedback ("every assertion is weak: line 9 only checks the value is not
+  None"). Default two attempts: one fix-up round, bounded cost.
+- **Three outcomes.** `KEPT`; `NEEDS_REVIEW` (well formed but fails against
+  the code, which may be a real bug or a spec gap, so it's saved aside as
+  `*_needs_review.py` where pytest won't collect it); `REJECTED` (never
+  produced a well-formed strong test).
+- **Running AI-written code.** Check 4 runs the draft with pytest in a
+  subprocess with its own temporary `pytest.ini` and a 60-second timeout.
+  It is still arbitrary code, so the README says to only point this at code
+  you'd run your own tests against.
+- **`TestWriter` is a `Protocol`.** Any object with a matching `write()`
+  method fits, no inheritance needed (structural typing). The Java
+  equivalent is an interface; the difference is the class never has to say
+  `implements`. `generate_tests()` only knows the protocol, so the tests
+  pass in `FakeTestWriter` the way you'd pass a Mockito stub into a
+  constructor. No API key, no network, no cost.
+- **Model and SDK.** `ClaudeTestWriter` uses the official `anthropic` SDK,
+  default model `claude-opus-5-5` at `medium` effort, overridable with
+  `--model` or `SPECGATE_MODEL`. Server-side fallbacks are on, so if a
+  safety classifier declines a request the API retries it on another model.
+  A reply that doesn't finish normally raises `GenerationError`, which uses
+  up one attempt.
+- **Secrets.** The SDK reads `ANTHROPIC_API_KEY` from the environment;
+  `python-dotenv` loads it from a gitignored `.env`. The key never appears
+  in specgate's code or arguments. `anthropic` and `python-dotenv` are an
+  optional `[ai]` extra, so the gates install without them (Maven: an
+  optional dependency or a separate profile).
+
 ## Stage 3: traceability gate (`traceability.py`)
 
 - **Static scan, not a pytest plugin.** We parse test files with Python's
@@ -111,6 +156,10 @@ Why the code looks the way it does, and the Java idea each piece maps to.
 - Exit codes: `0` pass, `1` gate failed, `2` bad input. CI only needs to
   look at the exit code.
 - `specgate assertions --tests DIR` runs stage 4 with the same exit codes.
+- `specgate generate ...` runs stage 2: `0` every scenario got a kept test,
+  `1` some didn't, `2` bad input, missing extras or no API key. The
+  `anthropic` import happens inside the command, so the other commands
+  work without it installed.
 
 ## Example target (`examples/identity_sync`)
 
