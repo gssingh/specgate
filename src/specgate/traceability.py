@@ -83,14 +83,14 @@ def check_traceability(
 def find_spec_refs(paths: Iterable[Path | str]) -> list[SpecRef]:
     """Collect spec markers from every test file under the given paths."""
     refs: list[SpecRef] = []
-    for test_file in _test_files(paths):
+    for test_file in find_test_files(paths):
         tree = ast.parse(test_file.read_text(encoding="utf-8"), filename=str(test_file))
         refs.extend(_refs_in_module(tree, test_file))
     return refs
 
 
-def _test_files(paths: Iterable[Path | str]) -> list[Path]:
-    # Same default naming rules pytest uses: test_*.py and *_test.py.
+def find_test_files(paths: Iterable[Path | str]) -> list[Path]:
+    """Test files under the given paths, named like pytest expects: test_*.py, *_test.py."""
     files: list[Path] = []
     for path in map(Path, paths):
         if path.is_dir():
